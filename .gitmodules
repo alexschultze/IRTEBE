@@ -1,0 +1,3 @@
+[submodule "FreeRTOS-Teensy4"]
+	path = FreeRTOS-Teensy4
+	url = https://github.com/juliandesvignes/FreeRTOS-Teensy4
