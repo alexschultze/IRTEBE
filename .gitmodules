@@ -1,3 +1,6 @@
-[submodule "FreeRTOS-Teensy4"]
-	path = FreeRTOS-Teensy4
+[submodule "mod/FreeRTOS-Teensy4"]
+	path = mod/FreeRTOS-Teensy4
 	url = https://github.com/juliandesvignes/FreeRTOS-Teensy4
+[submodule "mod/ADS1256"]
+	path = mod/ADS1256
+	url = https://github.com/adienakhmad/ADS1256.git
