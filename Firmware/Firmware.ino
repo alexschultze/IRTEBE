@@ -64,13 +64,17 @@ static StreamBufferHandle_t xStreamBuffer = NULL;
 
 #define ERROR_SD 0
 #define ERROR_NETWORK 1
+#define ERROR_MUTEX 2
 
 
 
 uint8_t run_id = 0;
 uint8_t reg_status = 0;
 uint8_t reg_error = 0;
-sMeasurement currentMeasurement; // During one interval new measurements are written into file
+
+sMeasurement dCurrentMeas; // During one interval new measurements are written into file
+SemaphoreHandle_t xCurrentMeas_mutex;
+
 
 const uint8_t EEPROM_ADDR = 100;
 
@@ -312,9 +316,28 @@ static void pLoadcell(void* arg) {
 			float hx711_1 = LoadCell_1.getData();
 			float hx711_2 = LoadCell_2.getData();
 			float hx711_3 = LoadCell_3.getData();
-			unsigned long hx711_time = millis();
-			
-		}
+
+
+
+
+        // Take the mutex for writing to current measurement
+         if( xSemaphoreTake( xCurrentMeas_mutex, (1000L * configTICK_RATE_HZ) / 1000L ) == pdTRUE )
+        { 
+            dCurrentMeas.strain[0] =hx711_1;
+            dCurrentMeas.strain[1] =hx711_2;
+            dCurrentMeas.strain[2] =hx711_3;
+            dCurrentMeas.strain_ts=millis();
+            
+            xSemaphoreGive( xCurrentMeas_mutex );
+        }
+        else
+        {
+            reg_error |= ERROR_MUTEX;
+        }
+
+
+      
+		} // new data ready
 		
 	}//for
 	
@@ -440,9 +463,27 @@ static void pAccelerometer(void* arg) {
 		if (zdata >= 0x80000) {
 			zdata = ~zdata + 1;
 		}
+
+    // Take the mutex for writing to current measurement
+         if( xSemaphoreTake( xCurrentMeas_mutex, (1000L * configTICK_RATE_HZ) / 1000L ) == pdTRUE )
+        { 
+            dCurrentMeas.acc[0] =xdata;
+            dCurrentMeas.acc[1] =ydata;
+            dCurrentMeas.acc[2] =zdata;
+            dCurrentMeas.acc_ts=millis();
+            
+            xSemaphoreGive( xCurrentMeas_mutex );
+        }
+        else
+        {
+            reg_error |= ERROR_MUTEX;
+        }
 		
 		
 	}//for
+
+
+       
 	
 }
 
@@ -580,6 +621,20 @@ static void pADC_ext(void* arg) {
 		if (adc_val > 0x7fffff) { //if MSB == 1
 			adc_val = adc_val - 16777216; //do 2's complement, keep the sign this time!
 		}
+
+      // Take the mutex for writing to current measurement
+         if( xSemaphoreTake( xCurrentMeas_mutex, (1000L * configTICK_RATE_HZ) / 1000L ) == pdTRUE )
+        { 
+            dCurrentMeas.adc[0] =adc_val;
+            dCurrentMeas.adc_ts[0]=adc_lasttime;
+            
+            xSemaphoreGive( xCurrentMeas_mutex );
+        }
+        else
+        {
+            reg_error |= ERROR_MUTEX;
+        }
+     
 		
 		
 	}//for
@@ -720,8 +775,14 @@ void setup() {
 	Serial.println(configTICK_RATE_HZ);
 	
 	
-	
-	
+	 /* Create a mutex type semaphore for current measurement. */
+   xCurrentMeas_mutex = xSemaphoreCreateMutex();
+
+  if( xCurrentMeas_mutex == NULL )
+    {
+      reg_error |= ERROR_MUTEX;
+      Serial.print("main::Mutex error.");
+    }
 	
 	portBASE_TYPE s1, s2,s3,s4,s5;
 	
@@ -782,4 +843,3 @@ void setup() {
 void loop() {
 	// Not used.
 }
-

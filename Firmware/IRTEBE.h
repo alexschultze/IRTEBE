@@ -6,11 +6,14 @@ struct sMeasurement {
    
    int16_t  adc[5];
    uint32_t  adc_ts[5];
+
+   int16_t  acc[3];
+   uint32_t  acc_ts;
   
    int32_t  strain[3];
-   uint32_t  strain_ts[5];
+   uint32_t  strain_ts;
    
-   int32_t  sensor[3];
+   float  sensor[3];
    uint32_t  sensor_ts[3]; 
      
    int32_t  pos[4];
