@@ -1,6 +1,5 @@
 /*IRTEBE Main firmware */
 
-
 /*This code is based FreeRTOS. Some libraries are required:
 	* Preqrequisites: HX711_ADC, SdFAT (v2)
 	* 
@@ -20,7 +19,7 @@
 /* Task overview:
 	*  -------------
 	*  Priority |   Task
-	*       3   | Measurement cycling
+	*       4   | Measurement cycle
 	*       3   |
 	*       2   | Acquisition ADC, Acquisition HX711, TCP socket communication
 	*       1   | SdWrite, Housekeeping, Wifi
@@ -36,17 +35,20 @@
 */
 
 
-
 #ifdef TEENSY_CORE
 	//Teensy 4.1:  7936K Flash, 1024K RAM (512K tightly coupled)
 	#include <EEPROM.h>
 	#include "FreeRTOS_TEENSY4.h" //Using TEENSY 4 board
-	#elif defined(_SAMD21_)
+#elif defined(_SAMD21_)
+   //MKR1000: 32kByte RAM, 262kByte ROM
 	//#include "mod/ADS1256/ADS1256.h"
-	#include <FreeRTOS_SAMD21.h> //Using Arduino MKR1000 board with SAMD21
-	#else defined(__AVR___)
-	
+	#include "FreeRTOS_SAMD21.h" //Using Arduino MKR1000 board with SAMD21, FreeRTOS 10
+#else defined(__AVR___)
+
 #endif
+
+
+
 
 #include "IRTEBE.h"      // Definition of measurement file
 
@@ -62,18 +64,27 @@
 /* The stream buffer that is used to send data from an interrupt to the task. */
 static StreamBufferHandle_t xStreamBuffer = NULL;
 
+
+#define QUEUE_LENGTH    10
+#define ITEM_SIZE       sizeof( sMeasurement_t )
+static QueueHandle_t xQueue = NULL;
+
+
+
 #define ERROR_SD 0
 #define ERROR_NETWORK 1
 #define ERROR_MUTEX 2
-
+#define ERROR_QUEUE_NET 3
+#define ERROR_QUEUE_SD 4
 
 
 uint8_t run_id = 0;
 uint8_t reg_status = 0;
 uint8_t reg_error = 0;
 
-sMeasurement dCurrentMeas; // During one interval new measurements are written into file
+sMeasurement_t dCurrentMeas; // During one interval new measurements are written into file
 SemaphoreHandle_t xCurrentMeas_mutex;
+
 
 
 const uint8_t EEPROM_ADDR = 100;
@@ -228,6 +239,68 @@ static void Thread2(void* arg) {
 		vTaskDelay((200L * configTICK_RATE_HZ) / 1000L);
 	}
 }
+
+
+//=====================================================================================                                  
+//=================THREAD============Meassurement cycling==============================
+//=====================================================================================  
+static byte pin_info = 9;
+byte pin_info_state = 0;
+
+static void pMeasurement(void* arg) {
+
+  pinMode(pin_info, OUTPUT);
+  const TickType_t taskPeriod = 1000; // 20ms <--> 50Hz
+  
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  for(;;){
+    
+    vTaskDelayUntil(&xLastWakeTime, taskPeriod);
+        
+    pin_info_state=~pin_info_state;
+    digitalWrite(pin_info, pin_info_state);
+
+      // Take the mutex for writing to current measurement
+     if( xSemaphoreTake( xCurrentMeas_mutex, (1000L * configTICK_RATE_HZ) / 1000L ) == pdTRUE )
+    { 
+
+         dCurrentMeas.ts = micros();
+         dCurrentMeas.cnt  ++;
+         dCurrentMeas.status = reg_status;
+         dCurrentMeas.error = reg_error;
+
+         if(xQueueSend( xQueue,     /* The queue being written to. */
+                &dCurrentMeas, /* The address of the data being sent. */
+                0UL ) != pdPASS)
+                {
+                  reg_error |= ERROR_QUEUE_NET; 
+                }
+                
+          if (xStreamBufferSend(xStreamBuffer,&dCurrentMeas,sizeof( sMeasurement_t ),0)!= pdPASS)
+          {
+              reg_error |= ERROR_QUEUE_SD; 
+            
+          }
+                
+
+
+        
+        xSemaphoreGive( xCurrentMeas_mutex );
+    }
+    else
+    {
+        reg_error |= ERROR_MUTEX;
+    }
+
+    
+  }
+
+}
+
+
+
+
+
 //=====================================================================================                                  
 //=================THREAD============Housekeeping======================================
 //=====================================================================================  
@@ -244,9 +317,20 @@ static void pHousekeeping(void* arg) {
 		size_t sd_free =xStreamBufferSpacesAvailable( xStreamBuffer );
 		size_t sd_full =xStreamBufferBytesAvailable( xStreamBuffer );
 		
-		Serial.print("hk::");
-		Serial.print("sd");Serial.print(sd_full); Serial.print("/"); Serial.println(sd_free); 
-		
+		Serial.print("status::");
+		Serial.print("queue_sd");Serial.print(sd_full); Serial.print("/"); Serial.println(sd_free); 
+
+    size_t net_free =uxQueueSpacesAvailable(xQueue);
+    size_t net_full =uxQueueMessagesWaiting(xQueue);
+
+    Serial.print("status::");
+    Serial.print("queue_net");Serial.print(net_full); Serial.print("/"); Serial.println(net_free); 
+
+    Serial.print("status::ram"); Serial.println(xPortGetFreeHeapSize());
+
+    Serial.print("status::info"); Serial.print(reg_status,BIN);Serial.print("| error"); Serial.print(reg_error,BIN);
+
+    /* Debug functions  */
 		vTaskGetRunTimeStats(bufptr1);  
 		Serial.write(bufptr1);
 		
@@ -752,12 +836,62 @@ static void pADC_ext(void* arg) {
 #endif // #ifdef defined(_SAMD21_)
 
 
+
+//=====================================================================================                                  
+//=================THREAD============ETHERNET on TEENSY================================
+//===================================================================================== 
+
+
+#include <Ethernet.h>
+
+
+// telnet defaults to port 23
+EthernetServer server(23);
+boolean alreadyConnected = false; // whether or not the client was connected previously
+byte mac_eth[] = {
+  0x00, 0xAA, 0x00, 0x00, 0x00, 0x02
+};
+
+static void pEthernet(void* arg) {
+
+// initialize the ethernet device
+  if (Ethernet.begin(mac_eth) == 0) {
+    Serial.println("eth::Failed to configure Ethernet using DHCP");
+    if (Ethernet.hardwareStatus() == EthernetNoHardware) {
+      Serial.println("eth::Ethernet shield was not found.  Sorry, can't run without hardware. :(");
+    } else if (Ethernet.linkStatus() == LinkOFF) {
+      Serial.println("eth::Ethernet cable is not connected.");
+    }
+    // no point in carrying on, so do nothing forevermore:
+    /*
+    while (true) {
+      vTaskDelay(portMAX_DELAY);
+    }*/
+  }
+  // print your local IP address:
+  Serial.print("eth:: ip: ");
+  Serial.println(Ethernet.localIP());
+
+  for(;;) {
+
+    byte tmp_meas;
+    if (xQueueReceive(xQueue,&tmp_meas,portMAX_DELAY) == pdPASS)
+      {
+        Serial.print("eth::queue rx");
+      }
+   
+  }
+
+
+}
+
+
 //=====================================================================================                                  
 //==================================Initialisation=====================================
 //=====================================================================================  
 void setup() {
 	
-	// Initialize some randomndess
+	// Initialize some randomness
 	randomSeed(analogRead(0));
 	
 	Serial.begin(115200);
@@ -773,6 +907,10 @@ void setup() {
 	
 	Serial.print("main::Tick rate: ");
 	Serial.println(configTICK_RATE_HZ);
+
+  Serial.print("main::Free heap size ");
+  Serial.println(xPortGetFreeHeapSize());
+ 
 	
 	
 	 /* Create a mutex type semaphore for current measurement. */
@@ -797,26 +935,35 @@ void setup() {
 	
 	
 	
-	xStreamBuffer = xStreamBufferCreate( /* The buffer length in bytes. */
-		SD_STREAMBUFFER_SIZE,
-		/* The stream buffer's trigger level. */
-	SD_TRIGGERLEVEL);
+	xStreamBuffer = xStreamBufferCreate(SD_STREAMBUFFER_SIZE,	SD_TRIGGERLEVEL);
+    if( xStreamBuffer == NULL )
+    {
+       reg_error |= ERROR_QUEUE_SD; 
+    }
+
+    xQueue = xQueueCreate( QUEUE_LENGTH,
+                                 ITEM_SIZE);
+
+    if( xStreamBuffer == NULL )
+    {
+       reg_error |= ERROR_QUEUE_SD; 
+    }
+                                 
+    configASSERT( xQueue );
+    configASSERT( xStreamBuffer );
+
+
+ 
 	
 	// initialize semaphore
 	sem = xSemaphoreCreateCounting(1, 0);
 	
-	// create task at priority two
 	s1 = xTaskCreate(Thread1, "LED1", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
-	
-	// create task at priority one
 	s2 = xTaskCreate(Thread2, "LED2", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
 	
-	
-	// Housekeeping
 	s3 = xTaskCreate(pHousekeeping, "HK", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY+1, NULL);
-	
-	// SD Card write
 	s4 = xTaskCreate(pSdWrite, "SD", configMINIMAL_STACK_SIZE+1000, NULL, tskIDLE_PRIORITY+1, NULL);
+  s5 = xTaskCreate(pMeasurement, "MEAS", configMINIMAL_STACK_SIZE+1000, NULL, tskIDLE_PRIORITY+3, NULL);  
 	
 	
 	#if defined(_SAMD21_)
@@ -824,12 +971,13 @@ void setup() {
 	#endif
 	
 	// check for creation errors
-	if (sem== NULL || s1 != pdPASS || s2 != pdPASS || s3 != pdPASS || s4 != pdPASS) {
+	if (sem== NULL || s1 != pdPASS || s2 != pdPASS || s3 != pdPASS || s4 != pdPASS || s5 != pdPASS) {
 		Serial.println("main::Creation problem");
 	}
 	
 	Serial.println("main::Starting the scheduler !");
-	
+	  Serial.print("main::Free heap size ");
+  Serial.println(xPortGetFreeHeapSize());
 	
 	delay(5000);
 	// start scheduler

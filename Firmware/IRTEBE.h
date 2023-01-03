@@ -1,7 +1,10 @@
-struct sMeasurement {
+
+
+struct sMeasurement_t {
    uint32_t  cnt; // incrementing count
    uint32_t  ts; //micros, timestamp when measurement was packaged
-   uint16_t stat;
+   uint16_t status;
+   uint16_t error;
    uint16_t trig;
    
    int16_t  adc[5];
