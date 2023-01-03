@@ -76,6 +76,7 @@ static QueueHandle_t xQueue = NULL;
 #define ERROR_MUTEX 2
 #define ERROR_QUEUE_NET 3
 #define ERROR_QUEUE_SD 4
+#define ERROR_ETH 5
 
 
 uint8_t run_id = 0;
@@ -845,8 +846,12 @@ static void pADC_ext(void* arg) {
 #include <Ethernet.h>
 
 
-// telnet defaults to port 23
-EthernetServer server(23);
+// Enter the IP address of the server you're connecting to:
+IPAddress server(192, 168, 1, 100);
+
+EthernetClient client;
+static unsigned int port_eth = 5080;
+
 boolean alreadyConnected = false; // whether or not the client was connected previously
 byte mac_eth[] = {
   0x00, 0xAA, 0x00, 0x00, 0x00, 0x02
@@ -872,18 +877,45 @@ static void pEthernet(void* arg) {
   Serial.print("eth:: ip: ");
   Serial.println(Ethernet.localIP());
 
+if(client.connected()){
+  
+
+}else{ // not connected to SERVER
+    if (client.connect(server, port_eth)) {
+    Serial.println("eth:connected");
+  } else {
+    // if you didn't get a connection to the server:
+    Serial.println("eth:connection failed");
+  }
+} // if(client.connected())
+
   for(;;) {
 
     byte tmp_meas;
-    if (xQueueReceive(xQueue,&tmp_meas,portMAX_DELAY) == pdPASS)
+    if (xQueueReceive(xQueue,&tmp_meas,10) == pdPASS)
       {
         Serial.print("eth::queue rx");
+        if(client.connected()){
+          reg_error = reg_error & ~(1 << ERROR_ETH);  //clear error bit
+          client.write(tmp_meas);
+        }else{
+          reg_error = reg_error & ~(1 << ERROR_ETH) | (1 << ERROR_ETH); //set error bit
+        }
       }
+
+      /* Check for incoming command */
+      if (client.available()) {
+            char c = client.read();
+            Serial.println("eth:: rx command:");
+            Serial.print(c);
+            }
+      } // for(;;)
+      
    
-  }
+  } //thread pETH
 
 
-}
+
 
 
 //=====================================================================================                                  
