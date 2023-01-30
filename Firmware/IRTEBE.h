@@ -1,4 +1,6 @@
-
+#define PIN_INFO1 10
+#define PIN_INFO2 11
+#define PIN_ERROR 12
 
 struct sMeasurement_t {
    uint32_t  cnt; // incrementing count

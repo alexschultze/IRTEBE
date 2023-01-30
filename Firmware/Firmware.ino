@@ -54,6 +54,7 @@
 
 //The following libraries are needed (install via TOOLS-Manage libraries
 #include <HX711_ADC.h>
+// Consider switching to : HX711-multi uses only 1 clock line for several modules.
 #include "SdFat.h" // SdFAT2
 
 
@@ -245,7 +246,6 @@ static void Thread2(void* arg) {
 //=====================================================================================                                  
 //=================THREAD============Meassurement cycling==============================
 //=====================================================================================  
-static byte pin_info = 9;
 byte pin_info_state = 0;
 
 static void pMeasurement(void* arg) {
@@ -259,7 +259,7 @@ static void pMeasurement(void* arg) {
     vTaskDelayUntil(&xLastWakeTime, taskPeriod);
         
     pin_info_state=~pin_info_state;
-    digitalWrite(pin_info, pin_info_state);
+    digitalWrite(PIN_INFO1, pin_info_state);
 
       // Take the mutex for writing to current measurement
      if( xSemaphoreTake( xCurrentMeas_mutex, (1000L * configTICK_RATE_HZ) / 1000L ) == pdTRUE )
@@ -914,6 +914,42 @@ if(client.connected()){
    
   } //thread pETH
 
+//=====================================================================================                                  
+//==INTERRUPT=====================Stepper control======================================
+//=====================================================================================  
+
+
+#include <AccelStepper.h>
+// Create an IntervalTimer object 
+IntervalTimer stepperTimer;
+
+AccelStepper stepper_grabx1(1, 20, 21); // pin 3 = step, pin 6 = direction
+AccelStepper stepper_grabx2(1, 22, 23); 
+AccelStepper stepper_graby1(1, 24, 25); 
+AccelStepper stepper_graby2(1, 26, 27); 
+
+
+void setup_stepper() {
+  stepper_grabx1.setMaxSpeed(400);
+  stepper_grabx2.setMaxSpeed(400);
+  stepperTimer.begin(run_steppers, 100);  // run every 100 us
+}
+
+int ledState = LOW;
+
+void run_steppers(){
+  stepper_grabx1.runSpeed();
+  stepper_grabx2.runSpeed();
+
+
+  if (ledState == LOW) {
+    ledState = HIGH;
+  } else {
+    ledState = LOW;
+  }
+  digitalWrite(PIN_INFO2, ledState);
+}
+}
 
 
 
